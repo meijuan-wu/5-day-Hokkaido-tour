@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>雪戀北海道 5 日隨身手帳</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Vue 3 CDN -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <!-- Leaflet 地圖 CDN -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Google 字體 -->
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    #map { height: 230px; border-radius: 1rem; }
+    /* 呼吸燈效果 (即時定位藍點) */
+    .user-pulse {
+      box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.7);
+      animation: pulse 1.8s infinite cubic-bezier(0.66, 0, 0, 1);
+    }
+    @keyframes pulse {
+      to { box-shadow: 0 0 0 16px rgba(14, 165, 233, 0); }
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 font-sans antialiased min-h-screen flex justify-center">
+
+  <div id="app" class="w-full max-w-md bg-white min-h-screen shadow-2xl relative flex flex-col pb-20">
+    
+    <!-- 頂部即時狀態欄 -->
+    <header class="sticky top-0 bg-white/90 backdrop-blur-md z-30 px-5 py-3 border-b border-slate-100 flex justify-between items-center">
+      <div>
+        <div class="flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full" :class="isGpsTracking ? 'bg-emerald-500 animate-ping' : 'bg-slate-300'"></span>
+          <span class="text-[10px] tracking-wider text-teal-700 font-bold uppercase">錸恩帕斯科技 X 雪戀北海道</span>
+        </div>
+        <h1 class="text-base font-bold text-slate-900 mt-0.5">北海道極致 5 日遊</h1>
+      </div>
+      <!-- 即時定位開關 -->
+      <button 
+        @click="toggleGpsTracking"
+        class="text-xs px-2.5 py-1.5 rounded-full border transition flex items-center gap-1 font-medium shadow-sm"
+        :class="isGpsTracking ? 'bg-teal-50 border-teal-500 text-teal-700' : 'bg-slate-50 border-slate-200 text-slate-500'"
+      >
+        <span :class="{'animate-spin': isGpsTracking}">🧭</span>
+        {{ isGpsTracking ? '即時追蹤中' : '開啟即時GPS' }}
+      </button>
+    </header>
+
+    <!-- 橫向滑動日期切換 -->
+    <div class="bg-slate-50/70 border-b border-slate-100 px-4 py-2.5 flex gap-2 overflow-x-auto no-scrollbar">
+      <button 
+        v-for="(day, index) in tripSchedule" 
+        :key="index"
+        @click="selectedDayIndex = index"
+        class="flex-shrink-0 flex flex-col items-center justify-center w-16 h-16 rounded-2xl transition duration-200 relative"
+        :class="selectedDayIndex === index ? 'bg-teal-700 text-white shadow-md shadow-teal-700/25 font-bold' : 'bg-white text-slate-500 border border-slate-200/60'"
+      >
+        <span class="text-[10px] opacity-80">{{ day.dateText }}</span>
+        <span class="text-sm font-semibold">Day {{ index + 1 }}</span>
+        <span class="text-[9px] opacity-70">{{ day.city }}</span>
+        <span v-if="day.isToday" class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-white"></span>
+      </button>
+    </div>
+
+    <!-- 即時狀態卡片 (當前進程與即時資訊) -->
+    <main class="flex-1 px-4 py-3 space-y-3 overflow-y-auto">
+      
+      <!-- 即時天氣與匯率模組 -->
+      <div class="grid grid-cols-2 gap-2.5">
+        <div class="bg-gradient-to-br from-teal-50/60 to-white p-3 rounded-2xl border border-teal-100/80 shadow-sm flex items-center gap-2.5">
+          <span class="text-2xl">❄️</span>
+          <div>
+            <div class="text-[10px] text-teal-700 font-semibold">{{ currentCityName }} 即時氣候</div>
+            <div class="text-sm font-bold text-slate-800">{{ weather.temp !== null ? `${weather.temp}°C` : '-2°C' }}</div>
+            <div class="text-[9px] text-slate-400">{{ weather.desc }}</div>
+          </div>
+        </div>
+
+        <div class="bg-gradient-to-br from-sky-50/60 to-white p-3 rounded-2xl border border-sky-100/80 shadow-sm flex items-center gap-2.5">
+          <span class="text-2xl">💴</span>
+          <div>
+            <div class="text-[10px] text-sky-700 font-semibold">即時參考匯率</div>
+            <div class="text-sm font-bold text-slate-800">1 JPY ≈ {{ exchangeRate.toFixed(3) }} NTD</div>
+            <div class="text-[9px] text-slate-400">已快取最新連線數據</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 地圖定位與導航區 (第三階段) -->
+      <div class="bg-white p-2 rounded-2xl border border-slate-200/80 shadow-sm relative">
+        <div id="map"></div>
+        <div class="absolute bottom-4 left-4 right-4 flex justify-between items-center z-[1000] pointer-events-none">
+          <span v-if="userLocation" class="bg-slate-900/80 text-white text-[10px] px-2.5 py-1 rounded-full backdrop-blur pointer-events-auto">
+            📍 距下個目標約 {{ distanceToNextSpot }} km
+          </span>
+          <span v-else class="bg-slate-900/60 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur">GPS待命中</span>
+          
+          <button @click="recenterMap" class="bg-white shadow px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-700 border border-slate-200 pointer-events-auto">
+            🎯 重設視角
+          </button>
+        </div>
+      </div>
+
+      <!-- 當日航班/住宿資訊卡 -->
+      <div class="bg-teal-900 text-white p-3.5 rounded-2xl text-xs space-y-1 shadow-sm">
+        <div class="flex justify-between items-center text-teal-200 font-medium">
+          <span>{{ currentDayData.flightInfo ? '✈️ 航班資訊' : '🏨 當晚下榻飯店' }}</span>
+          <span class="text-[11px] bg-teal-800 px-2 py-0.5 rounded text-white">{{ currentDayData.stayRegion }}</span>
+        </div>
+        <div v-if="currentDayData.flightInfo" class="text-sm font-bold tracking-wide">
+          {{ currentDayData.flightInfo }}
+        </div>
+        <div class="text-xs text-teal-100 font-medium">
+          {{ currentDayData.hotel }}
+        </div>
+      </div>
+
+      <!-- 行程時間軸清單 (含即時狀態判斷) -->
+      <div class="space-y-3 pt-1">
+        <div class="flex justify-between items-center">
+          <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider">
+            Day {{ selectedDayIndex + 1 }} 精選行程節點 ({{ currentDayData.timeline.length }})
+          </h2>
+          <span class="text-[11px] text-teal-600 font-medium">點擊景點可直接跳轉導航</span>
+        </div>
+
+        <div 
+          v-for="(item, idx) in currentDayData.timeline" 
+          :key="idx" 
+          @click="openExternalMap(item)"
+          class="bg-white rounded-2xl p-3.5 border border-slate-200/70 shadow-sm transition active:scale-[0.98] cursor-pointer relative overflow-hidden"
+          :class="{'ring-2 ring-teal-500 bg-teal-50/20': item.isCurrentActivity}"
+        >
+          <!-- 當前行程指示燈 -->
+          <div v-if="item.isCurrentActivity" class="absolute top-0 right-0 bg-teal-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg">
+            當前預定行程
+          </div>
+
+          <div class="flex items-start gap-3">
+            <span class="text-xs font-bold text-teal-700 bg-teal-50 border border-teal-200/60 px-2 py-0.5 rounded-md mt-0.5">
+              {{ item.time }}
+            </span>
+            <div class="flex-1">
+              <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                {{ item.title }}
+                <span v-if="item.highlight" class="text-[9px] font-normal px-1.5 py-0.2 bg-amber-50 text-amber-700 border border-amber-200 rounded">
+                  {{ item.highlight }}
+                </span>
+              </h3>
+              <p class="text-xs text-slate-500 mt-1 leading-relaxed">{{ item.desc }}</p>
+              
+              <!-- 餐飲與門票備註 -->
+              <div v-if="item.meal || item.notice" class="mt-2 text-[11px] bg-slate-50 p-2 rounded-xl text-slate-600 border border-slate-100 flex flex-wrap gap-2">
+                <span v-if="item.meal">🍴 {{ item.meal }}</span>
+                <span v-if="item.notice" class="text-rose-600 font-medium">⚠️ {{ item.notice }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 當日餐飲總表 -->
+      <div class="bg-white rounded-2xl p-3.5 border border-slate-200/70 shadow-sm text-xs space-y-1.5">
+        <div class="text-[11px] font-bold text-slate-400">當日餐膳安排</div>
+        <div class="grid grid-cols-3 gap-2 pt-1 text-slate-700">
+          <div class="bg-slate-50 p-2 rounded-xl"><span class="text-slate-400 block text-[10px]">早餐</span>{{ currentDayData.meals.breakfast }}</div>
+          <div class="bg-slate-50 p-2 rounded-xl"><span class="text-slate-400 block text-[10px]">午餐</span>{{ currentDayData.meals.lunch }}</div>
+          <div class="bg-slate-50 p-2 rounded-xl"><span class="text-slate-400 block text-[10px]">晚餐</span>{{ currentDayData.meals.dinner }}</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+
+    createApp({
+      setup() {
+        const selectedDayIndex = ref(0);
+        const isGpsTracking = ref(false);
+        const userLocation = ref(null);
+        const exchangeRate = ref(0.215); // 預設即時匯率快取
+        const weather = ref({ temp: -3, desc: '雪時多雲' });
+        let mapInstance = null;
+        let userMarker = null;
+        let spotMarkersLayer = null;
+        let watchId = null;
+
+        // PDF 2027/01/09 出發 5 日華航完整行程庫
+        const tripSchedule = ref([
+          {
+            dateText: '01/09 (六)',
+            city: '登別',
+            stayRegion: '登別溫泉鄉',
+            flightInfo: '去程：中華航空 CI130 (桃園 08:35 ➔ 新千歲 13:20)',
+            hotel: '登別石水亭溫泉飯店 / 萬事閣 / GRAND 溫泉飯店 或同級',
+            meals: { breakfast: '溫暖的家', lunch: '機上精緻簡餐', dinner: '獨家螃蟹懷石料理 或 豪華總匯自助餐' },
+            timeline: [
+              { time: '08:35', title: '桃園國際機場起飛', desc: '搭乘中華航空 CI130 班機飛往札幌新千歲', lat: 25.0797, lng: 121.2342 },
+              { time: '13:20', title: '抵達札幌新千歲機場', desc: '入境檢查、提領行李並搭乘專車出發', lat: 42.7752, lng: 141.6923 },
+              { time: '15:00', title: '支笏湖觀光', desc: '日本水溫最低且最北的不凍湖，水下能見度廿公尺之火山口湖', highlight: '日本第二深湖', lat: 42.7667, lng: 141.3167 },
+              { time: '17:30', title: '登別溫泉街 (極樂通商店街)', desc: '日式特色土產街散策，晚餐後可自由前往', lat: 42.4975, lng: 141.1436 },
+              { time: '20:00', title: '閻魔堂・魔王變臉秀', desc: '溫和表情瞬間轉為兇惡審判之變臉表演 (上演時間：17/20/21:00)', highlight: '必看特色秀', lat: 42.4969, lng: 141.1442, notice: '氣候因素可能偶爾閉堂' }
+            ]
+          },
+          {
+            dateText: '01/10 (日)',
+            city: '函館',
+            stayRegion: '湯之川溫泉',
+            hotel: '湯之川觀光溫泉飯店 / La\'gent 廣場函館北斗 或同級',
+            meals: { breakfast: '飯店內享用', lunch: '尼克斯壽喜燒無限吃到飽', dinner: '飯店內豪華自助餐 或 日式迎賓會席料理' },
+            timeline: [
+              { time: '09:00', title: '登別地獄谷', desc: '直徑450公尺的火山噴發口，終年白煙裊裊，登別湧泉之源', lat: 42.4977, lng: 141.1458 },
+              { time: '10:15', title: '尼克斯海洋公園', desc: '北歐丹麥風城堡、高達8米水晶塔、AQUA水中隧道、海豚海獅秀', highlight: '國王企鵝大遊行', lat: 42.4150, lng: 141.1783, notice: '企鵝遊行視體能調整' },
+              { time: '14:30', title: '金森赤レンガ倉庫群散策', desc: '八幡坂、元町教會、異人館街、明治館，感受港灣浪漫風情', highlight: '函館夢幻嘉年華燈飾', lat: 41.7663, lng: 140.7161 },
+              { time: '17:00', title: '函館山・百萬星空夜景', desc: '搭乘空中纜車上山，眺望雙曲弧線的世界級扇形絕景', highlight: '米其林三星夜景', lat: 41.7592, lng: 140.7042, notice: '山上風大，敬請穿著防寒大衣' }
+            ]
+          },
+          {
+            dateText: '01/11 (一)',
+            city: '洞爺湖',
+            stayRegion: '洞爺湖溫泉',
+            hotel: '洞爺觀光溫泉飯店 或同級 (享受星空露天風呂)',
+            meals: { breakfast: '飯店內享用', lunch: '大沼和風海鮮鍋 或 陶板燒料理', dinner: '飯店總匯自助餐 或 日式迎賓會席' },
+            timeline: [
+              { time: '08:30', title: '函館朝市巡禮', desc: '生鮮海膽、魚卵蓋飯、螃蟹現烤料理美食街', lat: 41.7725, lng: 140.7258 },
+              { time: '09:50', title: '五稜郭城跡公園', desc: '日本第一座西洋星形要塞城堡，幕府末期箱館戰爭之舞台', lat: 41.7968, lng: 140.7570 },
+              { time: '11:40', title: '大、小沼國定公園・雪上三合一', desc: '新日本三景！體驗雪上摩托車2圈、雪上香蕉船2圈及雪盆滑雪', highlight: '精彩雪上活動', lat: 42.0042, lng: 140.6725, notice: '摩托車限12歲以上；若雪量不足退¥2000改修道院' },
+              { time: '16:00', title: '洞爺湖畔雕刻公園', desc: '佇立著58座藝術雕刻品的環湖天然野外美術館', lat: 42.5658, lng: 140.8267 },
+              { time: '18:00', title: '洞爺彩燈隧道 (冬季限定)', desc: '點亮洞爺湖畔的夢幻燈火步道，夜訪露天溫泉', lat: 42.5630, lng: 140.8190 }
+            ]
+          },
+          {
+            dateText: '01/12 (二)',
+            city: '札幌',
+            stayRegion: '札幌市區',
+            hotel: '札幌東急REI / VISTA / IBIS / SMILE 微笑飯店 或同級',
+            meals: { breakfast: '飯店內享用', lunch: '小樽政壽司 (日幣¥2,500)', dinner: '難陀 nanda：八大螃蟹+和牛燒肉海鮮吃到飽 (¥11,500)' },
+            timeline: [
+              { time: '09:30', title: '光伸免稅店', desc: '採購各類日本免稅特產、伴手禮', lat: 43.0560, lng: 141.3570 },
+              { time: '10:45', title: '小樽浪漫漫步', desc: '北一硝子館、歐風蒸氣鐘(15分報時)、音樂盒堂、六花亭、北菓樓年輪蛋糕', highlight: '小樽青之運河藍色燈海', lat: 43.1970, lng: 141.0064 },
+              { time: '14:30', title: '札幌市區巡禮 (車經)', desc: '車經重要文化財【時計台】及巴洛克紅磚建築【舊道廳】', lat: 43.0642, lng: 141.3536 },
+              { time: '16:30', title: '大通公園・札幌白色燈樹節', desc: '欣賞大通會場37萬顆小燈泡點亮的光之森璀璨燈光祭', highlight: '白色燈樹節', lat: 43.0601, lng: 141.3533 },
+              { time: '18:30', title: '難陀 nanda 螃蟹放題大餐', desc: '八大螃蟹、和牛燒肉、海鮮生魚片、清酒啤酒無限享用！', highlight: '極致螃蟹饗宴', lat: 43.0543, lng: 141.3538 }
+            ]
+          },
+          {
+            dateText: '01/13 (三)',
+            city: '千歲',
+            stayRegion: '返回溫暖的家',
+            flightInfo: '回程：中華航空 CI131 (新千歲 14:40 ➔ 桃園 18:15)',
+            hotel: '回到溫暖的家',
+            meals: { breakfast: '飯店內享用', lunch: '機上精緻簡餐', dinner: '溫暖的家' },
+            timeline: [
+              { time: '09:30', title: '札幌自由巡禮 / 前往機場', desc: '最後採買與搭車前往新千歲空港國際線', lat: 43.0687, lng: 141.3508 },
+              { time: '12:00', title: '新千歲空港商場最後衝刺', desc: '辦理登機報到手續，國內外線特產街自由血拼', lat: 42.7875, lng: 141.6814 },
+              { time: '14:40', title: '搭乘華航 CI131 返台', desc: '帶滿滿回憶與戰利品平安返回台灣 (預計18:15抵達)', lat: 25.0797, lng: 121.2342 }
+            ]
+          }
+        ]);
+
+        const currentDayData = computed(() => tripSchedule.value[selectedDayIndex.value]);
+        const currentCityName = computed(() => currentDayData.value.city);
+
+        // 初始化 Leaflet 地圖
+        const initMap = () => {
+          if (mapInstance) return;
+          mapInstance = L.map('map', { zoomControl: false }).setView([42.7752, 141.6923], 8);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '© OpenStreetMap'
+          }).addTo(mapInstance);
+
+          spotMarkersLayer = L.layerGroup().addTo(mapInstance);
+          refreshSpotsOnMap();
+        };
+
+        // 更新地圖景點圖釘
+        const refreshSpotsOnMap = () => {
+          if (!mapInstance || !spotMarkersLayer) return;
+          spotMarkersLayer.clearLayers();
+
+          const currentTimeline = currentDayData.value.timeline;
+          const latlngs = [];
+
+          currentTimeline.forEach((item, index) => {
+            if (item.lat && item.lng) {
+              const marker = L.marker([item.lat, item.lng])
+                .bindPopup(`<b>${item.time} ${item.title}</b><br>${item.desc}`);
+              spotMarkersLayer.addLayer(marker);
+              latlngs.push([item.lat, item.lng]);
+            }
+          });
+
+          if (latlngs.length > 0) {
+            mapInstance.fitBounds(latlngs, { padding: [25, 25] });
+          }
+        };
+
+        // 開啟/關閉即時定位追蹤 (watchPosition)
+        const toggleGpsTracking = () => {
+          if (isGpsTracking.value) {
+            // 關閉
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+            isGpsTracking.value = false;
+            if (userMarker) mapInstance.removeLayer(userMarker);
+            userMarker = null;
+          } else {
+            // 開啟
+            if (!('geolocation' in navigator)) {
+              alert('您的瀏覽器不支援 GPS 定位');
+              return;
+            }
+            isGpsTracking.value = true;
+            watchId = navigator.geolocation.watchPosition(
+              (pos) => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                userLocation.value = { lat, lng };
+
+                // 地圖繪製使用者即時位置藍點
+                if (!userMarker) {
+                  userMarker = L.circleMarker([lat, lng], {
+                    radius: 8,
+                    fillColor: '#0284c7',
+                    color: '#ffffff',
+                    weight: 3,
+                    fillOpacity: 1
+                  }).addTo(mapInstance);
+                } else {
+                  userMarker.setLatLng([lat, lng]);
+                }
+              },
+              (err) => {
+                console.warn('GPS 取得限制:', err.message);
+                alert('無法取得定位。請確認是否在 HTTPS 環境下開啟，且已授權瀏覽器位置存取。');
+                isGpsTracking.value = false;
+              },
+              { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+          }
+        };
+
+        // 計算距離下一個景點的直線距離 (Haversine Formula)
+        const distanceToNextSpot = computed(() => {
+          if (!userLocation.value) return '--';
+          const nextSpot = currentDayData.value.timeline[0];
+          if (!nextSpot || !nextSpot.lat) return '--';
+
+          const R = 6371; // km
+          const dLat = (nextSpot.lat - userLocation.value.lat) * Math.PI / 180;
+          const dLon = (nextSpot.lng - userLocation.value.lng) * Math.PI / 180;
+          const a = 
+            Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(userLocation.value.lat * Math.PI / 180) * Math.cos(nextSpot.lat * Math.PI / 180) * 
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+          return (R * c).toFixed(1);
+        });
+
+        // 點擊地圖景點呼叫原生 Google Maps 導航
+        const openExternalMap = (item) => {
+          if (item.lat && item.lng) {
+            const url = `https://www.google.com/maps/dir/?api=1&destination=${item.lat},${item.lng}&destination_place_id=${encodeURIComponent(item.title)}`;
+            window.open(url, '_blank');
+          }
+        };
+
+        const recenterMap = () => {
+          if (userLocation.value && mapInstance) {
+            mapInstance.setView([userLocation.value.lat, userLocation.value.lng], 14);
+          } else {
+            refreshSpotsOnMap();
+          }
+        };
+
+        // 自動取得即時天氣與匯率 (Offline-first 快取架構)
+        const fetchOnlineData = async () => {
+          try {
+            // 抓即時日幣匯率
+            const rateRes = await fetch('https://open.er-api.com/v6/latest/JPY');
+            const rateData = await rateRes.json();
+            if (rateData?.rates?.TWD) {
+              exchangeRate.value = rateData.rates.TWD;
+              localStorage.setItem('cached_jpy_rate', exchangeRate.value);
+            }
+          } catch(e) {
+            exchangeRate.value = Number(localStorage.getItem('cached_jpy_rate')) || 0.215;
+          }
+
+          try {
+            // 抓札幌天氣 (Open-Meteo 免費 API)
+            const wRes = await fetch('https://api.open-meteo.com/v1/forecast?latitude=43.0642&longitude=141.3469&current_weather=true');
+            const wData = await wRes.json();
+            if (wData?.current_weather) {
+              weather.value.temp = Math.round(wData.current_weather.temperature);
+              weather.value.desc = weather.value.temp <= 0 ? '積雪結冰，注意保暖防滑' : '多雲舒適';
+            }
+          } catch(e) {}
+        };
+
+        onMounted(() => {
+          setTimeout(initMap, 200);
+          fetchOnlineData();
+        });
+
+        return {
+          selectedDayIndex,
+          tripSchedule,
+          currentDayData,
+          currentCityName,
+          weather,
+          exchangeRate,
+          isGpsTracking,
+          userLocation,
+          distanceToNextSpot,
+          toggleGpsTracking,
+          recenterMap,
+          openExternalMap
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
